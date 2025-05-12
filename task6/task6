@@ -1,1 +1,104 @@
+module gas_leakage_semi_auto (
+    input wire clk,              // System clock
+    input wire reset,            // System reset
+    input wire gas_detected,     // From MQ-2 sensor
+    input wire [7:0] uart_data,  // Data received from Bluetooth
+    input wire uart_data_ready,  // Flag: data is ready from UART
+    output reg led,              // LED output
+    output reg buzzer,           // Buzzer output
+    output reg [7:0] status_msg  // Status message byte to UART
+);
 
+// FSM states
+typedef enum logic [1:0] {
+    IDLE,
+    ALERT,
+    WAIT_CMD,
+    RESET_STATE
+} state_t;
+
+state_t current_state, next_state;
+
+reg [7:0] command_buffer [0:5]; // Buffer to hold up to 6-char command
+reg [2:0] char_index;           // Character counter
+
+// Flags
+reg gas_flag, reset_flag, status_flag;
+
+// FSM transition logic
+always @(posedge clk or posedge reset) begin
+    if (reset) begin
+        current_state <= IDLE;
+        led <= 0;
+        buzzer <= 0;
+        gas_flag <= 0;
+        reset_flag <= 0;
+        char_index <= 0;
+    end else begin
+        current_state <= next_state;
+
+        // Collect command characters
+        if (uart_data_ready) begin
+            command_buffer[char_index] <= uart_data;
+            char_index <= char_index + 1;
+        end
+    end
+end
+
+// FSM state control
+always @(*) begin
+    next_state = current_state;
+
+    case (current_state)
+        IDLE: begin
+            if (gas_detected)
+                next_state = ALERT;
+        end
+        ALERT: begin
+            led = 1;
+            buzzer = 1;
+            gas_flag = 1;
+            if (uart_data_ready && uart_data == 8'h0A) // '\n' end of command
+                next_state = WAIT_CMD;
+        end
+        WAIT_CMD: begin
+            if (compare_cmd("RESET"))
+                next_state = RESET_STATE;
+            else if (compare_cmd("STATUS"))
+                status_flag = 1;
+        end
+        RESET_STATE: begin
+            led = 0;
+            buzzer = 0;
+            gas_flag = 0;
+            char_index = 0;
+            next_state = IDLE;
+        end
+    endcase
+end
+
+// Command matching function
+function automatic bit compare_cmd(input [47:0] ref_cmd); // Max 6 chars
+    integer i;
+    begin
+        compare_cmd = 1;
+        for (i = 0; i < 6; i = i + 1) begin
+            if (ref_cmd[47 - i*8 -: 8] != command_buffer[i]) begin
+                compare_cmd = 0;
+            end
+        end
+    end
+endfunction
+
+// UART output logic
+always @(posedge clk) begin
+    if (status_flag) begin
+        if (gas_flag)
+            status_msg <= "G"; // Gas detected
+        else
+            status_msg <= "S"; // Safe
+        status_flag <= 0;
+    end
+end
+
+endmodule
